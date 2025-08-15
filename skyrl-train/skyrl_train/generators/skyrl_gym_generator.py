@@ -6,6 +6,7 @@ from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from tqdm.asyncio import tqdm
+from collections import defaultdict
 
 from skyrl_train.generators.base import GeneratorInterface, GeneratorInput, GeneratorOutput
 from skyrl_train.inference_engines.inference_engine_client import InferenceEngineClient
@@ -49,6 +50,39 @@ class SkyRLGymGenerator(GeneratorInterface):
         else:
             self.env_executor = None
 
+    def _aggregate_env_metrics(self, env_step_outputs: List[BaseTextEnvStepOutput]) -> Dict[str, float]:
+        """
+        Aggregate environment-specific emtrics across the training batch.
+        Returns metrics with 'env/' prefix for wandb logging.
+        
+        Args:
+            env_step_outputs: List of BaseTextEnvStepOutput from environment steps
+            
+        Returns:
+            Dict with aggreagated metrics prefixed with 'env/'
+        """
+        aggregated_metrics = defaultdict(list)
+
+        # collect metrics from all environment steps in the batch
+        for env_output in env_step_outputs:
+            if env_output.get("metricss") and isinstance(env_output["metrics"], dict):
+                for metric_name, metric_value in env_output["metrics"].items():
+                    if isinstance(metric_value, (int, float, np.number)):
+                        aggregated_metrics[metric_name].append(float(metric_value))
+
+        # compute aggregated statistics
+        final_metrics = {}
+        for metric_name, values in aggregated_metrics.items():
+            if values:
+                values_array = np.array(values)
+                final_metrics[f"env/{metric_name}_mean"] = np.mean(values_array).items()
+                final_metrics[f"env/{metric_name}_std"] = np.std(values_array).items()
+                final_metrics[f"env/{metric_name}_min"] = np.min(values_array).items()
+                final_metrics[f"env/{metric_name}_max"] = np.max(values_array).items()
+                final_metrics[f"env/{metric_name}_count"] = len(values_array)
+
+        return final_metrics
+
     async def agent_loop(
         self,
         prompt: ConversationType,
@@ -57,7 +91,7 @@ class SkyRLGymGenerator(GeneratorInterface):
         max_tokens: int,
         max_input_length: int,
         sampling_params: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[List[int], float, str, List[int], List[int]]:
+    ) -> Tuple[List[int], float, str, List[int], List[int], List[BaseTextEnvStepOutput]]:
         """
         Multi-turn generation loop that executes a single trajectory.
 
@@ -73,6 +107,7 @@ class SkyRLGymGenerator(GeneratorInterface):
             stop_reason: str
             loss_mask: List[int]
             prompt_token_ids: List[int]
+            env_step_outputs: List[BaseTextEnvStepOutput]  # Added for metrics aggregation
         """
 
         # Create a new environment instance
@@ -98,6 +133,7 @@ class SkyRLGymGenerator(GeneratorInterface):
 
         initial_prompt_length = len(input_ids)
         loss_mask = []
+        env_step_outputs = []
 
         while not done:
             if self.use_conversation_multi_turn:
@@ -116,6 +152,9 @@ class SkyRLGymGenerator(GeneratorInterface):
                 env_step_output: BaseTextEnvStepOutput = await loop.run_in_executor(self.env_executor, env.step, output)
             else:
                 env_step_output: BaseTextEnvStepOutput = env.step(output)
+
+            env_step_outputs.append(env_step_output)  # collect for metrics augmentation
+            
             new_obs = env_step_output["observations"]
             reward = env_step_output["reward"]
             done = env_step_output["done"]
@@ -169,7 +208,7 @@ class SkyRLGymGenerator(GeneratorInterface):
         response_ids = response_ids[:max_response_tokens]
         loss_mask = loss_mask[:max_response_tokens]
 
-        return response_ids, reward, stop_reason, loss_mask, prompt_ids
+        return response_ids, reward, stop_reason, loss_mask, prompt_ids, env_step_outputs
 
     async def generate_batched(
         self,
@@ -210,10 +249,13 @@ class SkyRLGymGenerator(GeneratorInterface):
         truncated_responses = []
         rewards = []
         loss_masks = []
+        env_step_outputs = []
 
         for response, env in zip(responses, envs):
             # step on function and compute reward
             env_step_output: BaseTextEnvStepOutput = env.step(response)
+            env_step_outputs.append(env_step_output)  # Collect for metrics aggregation
+            
             reward = env_step_output["reward"]
             rewards.append(reward)
 

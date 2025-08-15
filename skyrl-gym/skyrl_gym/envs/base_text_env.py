@@ -11,6 +11,7 @@ class BaseTextEnvStepOutput(TypedDict):
     reward: float
     done: bool
     metadata: Dict[str, Any]
+    metrics: Dict[str, Any]  # Additional metrics
     postprocessed_action: Optional[str] = None
 
 
