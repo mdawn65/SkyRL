@@ -65,7 +65,7 @@ class SkyRLGymGenerator(GeneratorInterface):
 
         # collect metrics from all environment steps in the batch
         for env_output in env_step_outputs:
-            if env_output.get("metricss") and isinstance(env_output["metrics"], dict):
+            if env_output.get("metrics") and isinstance(env_output["metrics"], dict):
                 for metric_name, metric_value in env_output["metrics"].items():
                     if isinstance(metric_value, (int, float, np.number)):
                         aggregated_metrics[metric_name].append(float(metric_value))
@@ -75,10 +75,10 @@ class SkyRLGymGenerator(GeneratorInterface):
         for metric_name, values in aggregated_metrics.items():
             if values:
                 values_array = np.array(values)
-                final_metrics[f"env/{metric_name}_mean"] = np.mean(values_array).items()
-                final_metrics[f"env/{metric_name}_std"] = np.std(values_array).items()
-                final_metrics[f"env/{metric_name}_min"] = np.min(values_array).items()
-                final_metrics[f"env/{metric_name}_max"] = np.max(values_array).items()
+                final_metrics[f"env/{metric_name}_mean"] = np.mean(values_array).item()
+                final_metrics[f"env/{metric_name}_std"] = np.std(values_array).item()
+                final_metrics[f"env/{metric_name}_min"] = np.min(values_array).item()
+                final_metrics[f"env/{metric_name}_max"] = np.max(values_array).item()
                 final_metrics[f"env/{metric_name}_count"] = len(values_array)
 
         return final_metrics
@@ -153,7 +153,7 @@ class SkyRLGymGenerator(GeneratorInterface):
             else:
                 env_step_output: BaseTextEnvStepOutput = env.step(output)
 
-            env_step_outputs.append(env_step_output)  # collect for metrics augmentation
+            env_step_outputs.append(env_step_output)  # collect for metrics aggregation
             
             new_obs = env_step_output["observations"]
             reward = env_step_output["reward"]
@@ -272,6 +272,9 @@ class SkyRLGymGenerator(GeneratorInterface):
         responses = truncated_responses
         rollout_metrics = self._rollout_metrics(responses, rewards)
 
+        env_metrics = self._aggregate_env_metrics(env_step_outputs)
+        rollout_metrics.update(env_metrics)
+
         generator_output: GeneratorOutput = {
             "prompt_token_ids": prompt_token_ids,
             "response_ids": responses,
@@ -334,7 +337,16 @@ class SkyRLGymGenerator(GeneratorInterface):
         loss_masks = sum([[output[3]] for output in all_outputs], [])
         prompt_token_ids = sum([[output[4]] for output in all_outputs], [])
 
+        # collect all environment step outputs for metrics aggregation
+        all_env_step_outputs = []
+        for output in all_outputs:
+            all_env_step_outputs.extend(output[5])  # output[5] is the env_step_outputs list
+
         rollout_metrics = self._rollout_metrics(responses, rewards)
+
+        env_metrics = self._aggregate_env_metrics(all_env_step_outputs)
+        rollout_metrics.update(env_metrics)
+
         if self.generator_cfg.zero_reward_on_non_stop:
             # set reward to 0 if the stop reason is not "stop"
             rewards = self._zero_reward_if_not_stop(rewards, stop_reasons)
