@@ -13,6 +13,7 @@ from skyrl_train.inference_engines.inference_engine_client import InferenceEngin
 from skyrl_train.inference_engines.base import InferenceEngineInput, ConversationType
 from omegaconf import DictConfig
 from skyrl_gym.envs.base_text_env import BaseTextEnvStepOutput
+from skyrl_gym.envs.gsm8k.env import GSM8kEnv
 from skyrl_train.generators.utils import get_custom_chat_template, get_generation_prompt_ids, apply_overlong_filtering
 
 
@@ -455,18 +456,29 @@ class SkyRLGymGenerator(GeneratorInterface):
             "generate/avg_tokens_zero_rewards": avg_tokens_zero_rewards.item(),
         }
 
+        # Use environment-specific aggregation if available
         if env_metrics:
-            metric_groups = {}
-            for metrics in env_metrics:
-                if metrics:
-                    for key, value in metrics.items():
-                        metric_groups.setdefault(key, []).append(value)
-            for key, values in metric_groups.items():
-                values_arr = np.array(values)
-                rollout_metrics[f"environment/{key}/min"] = np.min(values_arr).item()
-                rollout_metrics[f"environment/{key}/max"] = np.max(values_arr).item()
-                rollout_metrics[f"environment/{key}/avg"] = np.mean(values_arr).item()
-                rollout_metrics[f"environment/{key}/std"] = np.std(values_arr).item()
+            try:
+                # Try to use GSM8k's specialized aggregation
+                env_aggregated = GSM8kEnv.aggregate_environment_metrics(env_metrics)
+                
+                # Add to rollout_metrics with environment/ prefix
+                for key, value in env_aggregated.items():
+                    rollout_metrics[f"environment/{key}"] = value
+                    
+            except ImportError:
+                # Fallback to generic aggregation if GSM8k env not available
+                metric_groups = {}
+                for metrics in env_metrics:
+                    if metrics:
+                        for key, value in metrics.items():
+                            metric_groups.setdefault(key, []).append(value)
+                for key, values in metric_groups.items():
+                    values_arr = np.array(values)
+                    rollout_metrics[f"environment/{key}/min"] = np.min(values_arr).item()
+                    rollout_metrics[f"environment/{key}/max"] = np.max(values_arr).item()
+                    rollout_metrics[f"environment/{key}/avg"] = np.mean(values_arr).item()
+                    rollout_metrics[f"environment/{key}/std"] = np.std(values_arr).item()
 
         return rollout_metrics
 
